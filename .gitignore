@@ -1,0 +1,8 @@
+.devcontainer/
+CMakeCache.txt
+cmake_install.cmake
+.vscode/
+CMakeFiles/
+Makefile
+examples/
+dbg
