@@ -26,6 +26,12 @@ namespace dbg{
         void setBreakpointAtAddress(std::intptr_t addr);
         void dumpRegisters();
         void printSource(const std::string& file_name, unsigned line, unsigned n_lines_context=2);
+        void singleStepInstruction();
+        void singleStepInstructionWithBreakpointCheck();
+        void removeBreakpointAtAddress(std::intptr_t addr);
+        void stepIn();
+        void stepOut();
+        void stepOver();
 
     private:
         std::string m_prog_name;
@@ -37,21 +43,23 @@ namespace dbg{
 
         void handleCommand(const std::string &line);
         void continueExecution();
-
         auto getProgramCounter() -> uint64_t;
         void setProgramCounter(uint64_t pc);
         auto readMemory(uint64_t address) -> uint64_t ;
         void writeMemory(uint64_t address, uint64_t value);
         void stepOverBreakpoint();
         void waitForSignal();
+        
         auto getSignalInfo() -> siginfo_t;
         void handleSigtrap(siginfo_t info);
 
         void initialiseLoadAddress();
         uint64_t offsetLoadAddress(uint64_t addr);
+        uint64_t offsetDwarfAddress(uint64_t addr);
 
         auto getFunctionFromPc(uint64_t pc) -> dwarf::die;
         auto getLineEntryFromPc(uint64_t pc) -> dwarf::line_table::iterator;
+        uint64_t getOffsetPc();
     };
 }
 #endif
