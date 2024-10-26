@@ -52,6 +52,96 @@ int main (int argc, char *argv[]) {
     return 0;
 }
 
+uint64_t debugger::offsetDwarfAddress(uint64_t addr) {
+    return addr + m_load_address;
+}
+
+void debugger::stepOver(){
+    auto fun = getFunctionFromPc(getOffsetPc());
+    auto funEntry = at_low_pc(fun);
+    auto funEnd = at_high_pc(fun);
+
+    auto line = getLineEntryFromPc(funEntry);
+    auto startLine = getLineEntryFromPc(getOffsetPc());
+    std::vector<std::intptr_t> toDelete{};
+
+    while(line->address < funEnd){
+        if(line->address != startLine->address){
+            auto loadAddr = offsetDwarfAddress(line->address);
+            if(line->address != startLine->address && !m_breakpoints.count(loadAddr)){
+                setBreakpointAtAddress(loadAddr);
+                toDelete.push_back(loadAddr);
+            }
+        }
+        ++line;
+
+        auto framePointer = getRegisterValue(m_pid, reg::rbp);
+        auto returnAddress = readMemory(framePointer + 8);
+        if(!m_breakpoints.count(returnAddress)){
+            setBreakpointAtAddress(returnAddress);
+            toDelete.push_back(returnAddress);
+        }
+        continueExecution();
+
+        for(auto addr : toDelete){
+            removeBreakpointAtAddress(addr);
+        }
+    }
+}
+
+void debugger::stepOut() {
+    auto frame_pointer = getRegisterValue(m_pid, reg::rbp);
+    auto return_address = readMemory(frame_pointer + 8);
+
+    bool removeBreakpoint = false;
+    if(!m_breakpoints.count(return_address)){
+        setBreakpointAtAddress(return_address);
+        removeBreakpoint = true;
+    }
+    continueExecution();
+
+    if(removeBreakpoint){
+        removeBreakpointAtAddress(return_address);
+    }
+}
+
+void debugger::stepIn(){
+    auto line = getLineEntryFromPc(getOffsetPc())->line;
+
+    while(getLineEntryFromPc(getOffsetPc())->line == line){
+        singleStepInstructionWithBreakpointCheck();
+    }
+
+    auto line_entry = getLineEntryFromPc(getOffsetPc());
+    printSource(line_entry->file->path, line_entry->line);
+}
+
+uint64_t debugger::getOffsetPc(){
+    return offsetLoadAddress(getProgramCounter());
+}
+
+void debugger::removeBreakpointAtAddress(std::intptr_t addr) {
+    if (m_breakpoints.at(addr).is_enabled()) {
+        m_breakpoints.at(addr).disable();
+    }
+    m_breakpoints.erase(addr);
+}
+
+void debugger::singleStepInstruction() {
+    ptrace(PTRACE_SINGLESTEP, m_pid, nullptr, nullptr);
+    waitForSignal();
+}
+
+void debugger::singleStepInstructionWithBreakpointCheck() {
+    // Check if the current instruction is a breakpoint
+    auto possible_breakpoint_location = getProgramCounter();
+    if (m_breakpoints.count(possible_breakpoint_location)) {
+        stepOverBreakpoint();
+    } else {
+        singleStepInstruction();
+    }
+}
+
 void debugger::initialiseLoadAddress() {
    // If this is a dynamic library (e.g. PIE)
    if (m_elf.get_hdr().type == elf::et::dyn) {
@@ -275,38 +365,52 @@ void debugger::handleCommand(const std::string &line){
     auto args = split(line, ' ');
     auto command = args[0];
 
-    if(isPrefix(command, "continue")){
+    if(isPrefix(command, "continue") || isPrefix(command, "cont") || isPrefix(command, "c")){
         continueExecution();
     }
-    else if(isPrefix(command, "break")){
+    else if(isPrefix(command, "break") || isPrefix(command, "bp") || isPrefix(command, "b")){
         std::string addr {args[1], 2}; // Remove the 0x prefix, first two characters from the input address
         setBreakpointAtAddress(std::stol(addr, 0, 16));
     }
-    else if(isPrefix(command, "register")){
-        if (isPrefix(args[1], "dump")){
+    else if(isPrefix(command, "register") || isPrefix(command, "reg")){
+        if (isPrefix(args[1], "dump") || isPrefix(args[1], "d")){
             dumpRegisters();
         }
         // Ex -> register read rax
-        else if(isPrefix(args[1], "read")){
+        else if(isPrefix(args[1], "read") || isPrefix(args[1], "r")){
             auto reg = getRegisterFromName(args[2]);
             std::cout << getRegisterValue(m_pid, reg) << std::endl;
         }
         // Ex -> register write rax 0x42
-        else if(isPrefix(args[1], "write")){
+        else if(isPrefix(args[1], "write") || isPrefix(args[1], "w")){
             auto reg = getRegisterFromName(args[2]);
             std::string val {args[3], 2}; // remove the 0x prefix, first two characters from the input address
             setRegisterValue(m_pid, reg, std::stol(val, 0, 16));
         }
     }
-    else if(isPrefix(command, "memory")){
+    else if(isPrefix(command, "memory") || isPrefix(command, "mem") || isPrefix(command, "m")){
         std::string addr {args[2], 2}; // Remove the 0x prefix, first two characters from the input address
-        if(isPrefix(args[1], "read")){
+        if(isPrefix(args[1], "read") || isPrefix(args[1], "r")){
             std::cout << std::hex << readMemory(std::stol(addr, 0, 16)) << std::endl;
         }
-        else if(isPrefix(args[1], "write")){
+        else if(isPrefix(args[1], "write") || isPrefix(args[1], "w")){
             std::string val {args[3], 2}; // Remove the 0x prefix, first two characters from the input address
             writeMemory(std::stol(addr, 0, 16), std::stol(val, 0, 16));
         }
+    }
+    else if(isPrefix(command, "step") || isPrefix(command, "s")){
+        singleStepInstructionWithBreakpointCheck();
+        auto line_entry = getLineEntryFromPc(getProgramCounter());
+        printSource(line_entry->file->path, line_entry->line);
+    }
+    else if(isPrefix(command, "stepi") || isPrefix(command, "si")){
+        stepIn();
+    }
+    else if(isPrefix(command, "next") || isPrefix(command, "n")){
+        stepOver();
+    }
+    else if(isPrefix(command, "finish") || isPrefix(command, "fin") || isPrefix(command, "f")){
+        stepOut();
     }
     else {
         std::cerr << "Unknown command\n";
